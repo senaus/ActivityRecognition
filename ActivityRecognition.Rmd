@@ -1,0 +1,135 @@
+---
+title: "Practical machine learning - Course project : Activity recognition"
+author: "Sébastien Naus"
+date: "20 December 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+```
+
+# Executive summary
+
+This document constitutes the report of our findings related to the course project of the MOOC class "Practical Machine Learning" offered by John Hopkins University on Coursera. The project investigates the possibility of physical activity recognition from sensor data. A Random Forest model is built with an out-of-sample error rate of 0.8%.
+
+# Context
+
+The following paragraphs are extracted from the assignment page.
+
+### Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source:
+
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har.
+
+### Project goal
+
+The goal of the project is to predict the manner in which the subjects did the exercise. This is the "classe" variable in the training set. Any of the other variables may be used to predict with.
+
+# Exploratory data analysis and data cleaning
+
+The training and test datasets must first be read into R. After a first exploration, it appears that the data contains NA values coded in three different ways. These are thus taken into account when reading the file.
+
+```{r reading}
+pml.training <- read.csv("pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+pml.testing <- read.csv("pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+
+The `pml.training` dataset contains `r dim(pml.training)[1]` observations of `r dim(pml.training)[2]` variables while the `pml.testing` dataset contains `r dim(pml.testing)[1]` observations of `r dim(pml.testing)[2]` variables.
+
+The exploration of the data reveals that some columns in `pml.training` contain a majority of NA values. We thus decide to remove from the dataset the features containing more than 20% of NA values, as they would not constitute good predictors.
+
+```{r NAremoval}
+NAcount <- apply(pml.training, 2, function(x) sum(is.na(x)))
+NAlogic <- (NAcount > 0.2*dim(pml.training)[1])
+training <- pml.training[,which(!NAlogic)]
+testing <- pml.testing[,which(!NAlogic)]
+```
+
+Finally, the analysis of the features names reveal that the first 7 columns are identifiers such as user name, timestamps and time window identifiers. Since we are not interested in including a time-dependency in the prediction, we decide to remove these features and keep only those related to movement sensing.
+
+```{r useless}
+training <- training[,-c(1:7)]
+testing <- testing[,-c(1:7)]
+```
+
+After all these transformations, we are left with `r dim(training)[1]` variables (including the outcome) in each dataset.
+
+### Cross-validation preparation
+
+In order to flag problems like overfitting or selection bias and to give an insight on how the model will generalize to an independent dataset (by estimating the expected out-of-sample error), we can divide the `pml.training` dataset in a training set and a validation set. Given the relatively big number of observations (`r dim(pml.training)[1]`), this split can be made while conserving enough observations in the training set to build a good prediction model. The model built upon the training data will then be used to predict the outcome in the validation set. This prediction can finally be compared to the real outcome in order to obtain an estimate of the expected out-of-sample error.
+
+We decide to split 75% of the data in the training set and the remaining 25% in the validation set. The seed is also set in order to obtain reproducible results from functions using pseudo-random number generators.
+
+```{r validation}
+#Setting seed for reproducibility
+set.seed(343)
+
+#Partition in training and validation datasets
+inTrain <- createDataPartition(training$classe, p=0.75, list=F)
+validation <- training[-inTrain,]
+train <- training[inTrain,]
+```
+
+After partition, the `train` set contains `r dim(train)[1]` observations and the `validation` set `r dim(validation)[1]` observations.
+
+Before proceeding with the model building, we can first give a look at the distribution in `train` of `class`, the outcome variable that we want to predict.
+
+```{r echo=F, fig.align="center", fig.width=4}
+plot(train$classe, main="Distribution of outcome variable class in training dataset", xlab = "classe value", ylab="Number of occurences")
+```
+
+It can be observed in the figure above that the outcome is quite homogeneously spread accross the different outcome values (representing the movement being performed by the subject for each observation). This is expected if we assume that the measurements were made during a similar period of time for the different movements and subjects. This almost homogeneous spread of the outcome allows to reduce the bias in the prediction and is thus good for the model building.
+
+# Model building
+
+The outcome we seek to predict is a categorical variable that can take 5 different values (A, B, C, D or E) representing the movement being performed. We choose to implement a "random forest" prediction model. This is motivated by the fact that this type of model is invariant under scaling and various other transformations of feature values and is robust to inclusion of irrelevant features. Given the high number of features and their colinearity (many variables are directly correlated), these characteristics are welcomed as they allow to avoid features selection. Moreover, random forests are an extension of classification trees, which are well fitted for the prediction of categorical outcomes (classification).
+
+The code below is used to train the model on the training data.
+
+```{r modelbuilding, cache=T}
+RFmodel <- train(classe ~ ., data=train, method="rf")
+```
+
+First, we can calculate the accuracy of the model in the training data.
+
+```{r ISprediction}
+ISprediction <- predict(RFmodel, newdata=train)
+confusionMatrix(ISprediction, train$classe)
+```
+
+We observe that the model achieves an accuracy of 100% in the training data, or equivalently an in-sample error rate of 0. This is expected given the tendency of random forest models to overfit the training data.
+
+Secondly, we can use the model to predict the outcomes in the validation dataset and cross-validate the accuracy of the prediction.
+
+```{r OOS}
+OoSprediction <- predict(RFmodel, newdata=validation)
+confusionMatrix(OoSprediction, validation$classe)
+```
+
+We observe an accuracy of 0.992, or equivalently an expected out-of-sample error rate of 0.8%. A 95% confidence interval for the accuracy is [0.9891, 0.9943].
+
+# Conclusion
+
+A very good prediction accuracy was achieved through the use of a random forest algorithm, with an expected out-of-sample error rate of 0.8%. 
+
+This model can then be used to predict the outcomes in the testing sample. These predictions are presented below.
+
+```{r testing}
+testprediction <- predict(RFmodel, newdata=testing)
+testprediction
+```
